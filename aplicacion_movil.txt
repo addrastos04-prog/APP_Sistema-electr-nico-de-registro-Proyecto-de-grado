@@ -1,0 +1,2182 @@
+import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'firebase_options.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:async';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp(
+    options: DefaultFirebaseOptions.currentPlatform,
+  );
+  runApp(const ControlAccesoApp());
+}
+
+class ControlAccesoApp extends StatelessWidget {
+  const ControlAccesoApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Control de Acceso',
+      theme: ThemeData(
+        primarySwatch: Colors.blue,
+        useMaterial3: true,
+      ),
+      home: const _SesionAutoCierre(child: AuthGate()),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// OBSERVADOR: cierra sesión si la app estuvo en segundo
+// plano (minimizada O completamente cerrada) por 3 minutos o más.
+// Usa shared_preferences para que el dato sobreviva aunque
+// la app se cierre por completo, no solo cuando se minimiza.
+// ═══════════════════════════════════════════════════════
+class _SesionAutoCierre extends StatefulWidget {
+  final Widget child;
+  const _SesionAutoCierre({required this.child});
+
+  @override
+  State<_SesionAutoCierre> createState() => _SesionAutoCierreState();
+}
+
+class _SesionAutoCierreState extends State<_SesionAutoCierre>
+    with WidgetsBindingObserver {
+  static const _limiteSegundoPlano = Duration(minutes: 3);
+  static const _claveStorage = 'momento_en_segundo_plano';
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Revisamos al arrancar la app (cubre el caso de "cerrar por completo")
+    _verificarTiempoTranscurrido();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      _guardarMomentoActual();
+    } else if (state == AppLifecycleState.resumed) {
+      _verificarTiempoTranscurrido();
+    }
+  }
+
+  // Guarda la hora actual en almacenamiento persistente del celular
+  Future<void> _guardarMomentoActual() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_claveStorage, DateTime.now().toIso8601String());
+  }
+
+  // Revisa cuánto tiempo pasó desde la última vez que se guardó un momento.
+  // Si pasó 3 minutos o más, cierra la sesión.
+  Future<void> _verificarTiempoTranscurrido() async {
+    final prefs = await SharedPreferences.getInstance();
+    final momentoGuardado = prefs.getString(_claveStorage);
+
+    if (momentoGuardado != null) {
+      final momento = DateTime.parse(momentoGuardado);
+      final tiempoTranscurrido = DateTime.now().difference(momento);
+
+      if (tiempoTranscurrido >= _limiteSegundoPlano) {
+        await FirebaseAuth.instance.signOut();
+      }
+
+      // Limpiamos el dato guardado, ya lo usamos
+      await prefs.remove(_claveStorage);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return widget.child;
+  }
+}
+// ---------- HOME (ahora con tarjetas en rejilla de 2 columnas) ----------
+// ---------- HOME (ahora con botón de cerrar sesión) ----------
+class HomeScreen extends StatelessWidget {
+  const HomeScreen({super.key});
+
+  Future<void> _cerrarSesion(BuildContext context) async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cerrar sesión'),
+        content: const Text('¿Seguro que quieres salir?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Cerrar sesión', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmar == true) {
+      await FirebaseAuth.instance.signOut();
+      // No necesitamos navegar manualmente: el AuthGate detecta el cambio
+      // de sesión automáticamente y muestra LoginScreen por sí solo.
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Control de Acceso'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            tooltip: 'Cerrar sesión',
+            onPressed: () => _cerrarSesion(context),
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: GridView.count(
+          crossAxisCount: 2,
+          mainAxisSpacing: 12,
+          crossAxisSpacing: 12,
+          childAspectRatio: 1.1,
+          children: [
+            _TarjetaMenu(
+              icono: Icons.list_alt,
+              colorFondo: Colors.blue.shade50,
+              colorIcono: Colors.blue,
+              titulo: 'Registros',
+              subtitulo: 'Accesos en vivo',
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const RegistrosScreen()),
+                );
+              },
+            ),
+            _TarjetaMenu(
+              icono: Icons.people,
+              colorFondo: Colors.green.shade50,
+              colorIcono: Colors.green,
+              titulo: 'Usuarios',
+              subtitulo: 'Gestionar huellas',
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const UsuariosScreen()),
+                );
+              },
+            ),
+            _TarjetaMenu(
+              icono: Icons.event_note,
+              colorFondo: Colors.orange.shade50,
+              colorIcono: Colors.orange,
+              titulo: 'Permisos',
+              subtitulo: 'Autorizar salidas',
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const PermisosScreen()),
+                );
+              },
+            ),
+            _TarjetaMenu(
+              icono: Icons.access_time,
+              colorFondo: Colors.grey.shade200,
+              colorIcono: Colors.grey.shade700,
+              titulo: 'Jornadas',
+              subtitulo: 'Horas trabajadas',
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const JornadasScreen()),
+                );
+              },
+            ),
+            _TarjetaMenu(
+              icono: Icons.payments,
+              colorFondo: Colors.purple.shade50,
+              colorIcono: Colors.purple,
+              titulo: 'Nómina',
+              subtitulo: 'Resumen mensual',
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (context) => const NominaScreen()),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Widget reutilizable para cada tarjeta del menú principal
+class _TarjetaMenu extends StatelessWidget {
+  final IconData icono;
+  final Color colorFondo;
+  final Color colorIcono;
+  final String titulo;
+  final String subtitulo;
+  final VoidCallback onTap;
+
+  const _TarjetaMenu({
+    required this.icono,
+    required this.colorFondo,
+    required this.colorIcono,
+    required this.titulo,
+    required this.subtitulo,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: BorderSide(color: Colors.grey.shade300, width: 0.5),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Container(
+                width: 40,
+                height: 40,
+                decoration: BoxDecoration(
+                  color: colorFondo,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icono, color: colorIcono, size: 22),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                titulo,
+                style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                subtitulo,
+                style: TextStyle(fontSize: 12, color: Colors.grey.shade600),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ---------- PANTALLA DE REGISTROS (con navegación por día) ----------
+class RegistrosScreen extends StatefulWidget {
+  const RegistrosScreen({super.key});
+
+  @override
+  State<RegistrosScreen> createState() => _RegistrosScreenState();
+}
+
+class _RegistrosScreenState extends State<RegistrosScreen> {
+  DateTime _fechaSeleccionada = DateTime.now();
+
+  bool get _esHoy {
+    final hoy = DateTime.now();
+    return _fechaSeleccionada.year == hoy.year &&
+        _fechaSeleccionada.month == hoy.month &&
+        _fechaSeleccionada.day == hoy.day;
+  }
+
+  void _cambiarDia(int delta) {
+    setState(() {
+      _fechaSeleccionada = _fechaSeleccionada.add(Duration(days: delta));
+    });
+  }
+
+  Future<void> _abrirSelectorFecha() async {
+    final fecha = await showDatePicker(
+      context: context,
+      initialDate: _fechaSeleccionada,
+      firstDate: DateTime(2024, 1, 1),
+      lastDate: DateTime.now(),
+    );
+    if (fecha != null) {
+      setState(() {
+        _fechaSeleccionada = fecha;
+      });
+    }
+  }
+
+  String get _fechaFormateada {
+    const dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+    const meses = [
+      'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+      'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+    ];
+    final nombreDia = dias[_fechaSeleccionada.weekday - 1];
+    return '$nombreDia ${_fechaSeleccionada.day} de ${meses[_fechaSeleccionada.month - 1]}';
+  }
+
+  // "2026-06-26" para comparar contra el campo timestamp
+  String get _prefijoFecha {
+    return '${_fechaSeleccionada.year}-${_fechaSeleccionada.month.toString().padLeft(2, '0')}-${_fechaSeleccionada.day.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Registros de Acceso')),
+      body: Column(
+        children: [
+          // Selector de día
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.chevron_left),
+                  onPressed: () => _cambiarDia(-1),
+                ),
+                GestureDetector(
+                  onTap: _abrirSelectorFecha,
+                  child: Row(
+                    children: [
+                      Text(
+                        _fechaFormateada,
+                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(width: 6),
+                      Icon(Icons.calendar_today, size: 16, color: Colors.grey.shade600),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.chevron_right),
+                  // No permitimos avanzar más allá de hoy
+                  onPressed: _esHoy ? null : () => _cambiarDia(1),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+
+          // Lista filtrada por el día seleccionado
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance
+                  .collection('accesos')
+                  .orderBy('timestamp', descending: true)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Center(child: Text('Error: ${snapshot.error}'));
+                }
+                if (!snapshot.hasData) {
+                  return const Center(child: Text('Sin datos.'));
+                }
+
+                // Filtramos en el cliente: solo los del día seleccionado
+                final docsDelDia = snapshot.data!.docs.where((doc) {
+                  final data = doc.data() as Map<String, dynamic>;
+                  final timestamp = data['timestamp'] as Timestamp?;
+                  if (timestamp == null) return false;
+                  final fechaDoc = timestamp.toDate();
+                  final fechaTexto =
+                      '${fechaDoc.year}-${fechaDoc.month.toString().padLeft(2, '0')}-${fechaDoc.day.toString().padLeft(2, '0')}';
+                  return fechaTexto == _prefijoFecha;
+                }).toList();
+
+                if (docsDelDia.isEmpty) {
+                  return const Center(child: Text('No hay registros este día.'));
+                }
+
+                return ListView.builder(
+                  itemCount: docsDelDia.length,
+                  itemBuilder: (context, index) {
+                    final data = docsDelDia[index].data() as Map<String, dynamic>;
+
+                    final nombre = data['nombre'] ?? 'Desconocido';
+                    final resultado = data['resultado'] ?? '';
+                    final tipo = data['tipo'] ?? '';
+                    final timestamp = data['timestamp'] as Timestamp?;
+                    final hora = timestamp != null
+                        ? '${timestamp.toDate().hour.toString().padLeft(2, '0')}:${timestamp.toDate().minute.toString().padLeft(2, '0')}'
+                        : '--:--';
+
+                    final esPermitido = resultado == 'permitido';
+
+                    return ListTile(
+                      leading: Icon(
+                        esPermitido ? Icons.check_circle : Icons.cancel,
+                        color: esPermitido ? Colors.green : Colors.red,
+                      ),
+                      title: Text(nombre),
+                      subtitle: Text('$tipo • $hora'),
+                      trailing: Text(
+                        resultado,
+                        style: TextStyle(
+                          color: esPermitido ? Colors.green : Colors.red,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---------- PANTALLA DE USUARIOS (sin cambios) ----------
+class UsuariosScreen extends StatelessWidget {
+  const UsuariosScreen({super.key});
+
+  Future<void> _cambiarEstadoUsuario(String docId, bool nuevoEstado) async {
+    await FirebaseFirestore.instance
+        .collection('usuarios')
+        .doc(docId)
+        .update({'activo': nuevoEstado});
+  }
+
+  Future<void> _enviarComandoEnrolar(
+    BuildContext context,
+    String usuarioId,
+    int fingerprintId,
+    String nombre,
+  ) async {
+    try {
+      await FirebaseFirestore.instance
+          .collection('comandos')
+          .doc('dispositivo1')
+          .set({
+        'accion': 'enrolar',
+        'fingerprintId': fingerprintId,
+        'usuarioId': usuarioId,
+        'estado': 'pendiente',
+        'timestamp': Timestamp.now(),
+      });
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Comando de enrolamiento enviado para $nombre (ID huella: $fingerprintId)',
+            ),
+          ),
+        );
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error al enviar comando: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _eliminarUsuario(String docId) async {
+    await FirebaseFirestore.instance.collection('usuarios').doc(docId).delete();
+  }
+
+  Future<void> _confirmarEliminar(
+    BuildContext context,
+    String docId,
+    String nombre,
+  ) async {
+    final confirmar = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Eliminar usuario'),
+        content: Text('¿Seguro que quieres eliminar a $nombre? Esta acción no se puede deshacer.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Eliminar', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmar == true) {
+      await _eliminarUsuario(docId);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('$nombre fue eliminado')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Administrar Usuarios')),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance.collection('usuarios').snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return Center(child: Text('Error: ${snapshot.error}'));
+          }
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const Center(child: Text('Aún no hay usuarios registrados.'));
+          }
+
+          final docs = snapshot.data!.docs;
+
+          return ListView.builder(
+            itemCount: docs.length,
+            itemBuilder: (context, index) {
+              final doc = docs[index];
+              final data = doc.data() as Map<String, dynamic>;
+
+              final nombre = data['nombre'] ?? 'Sin nombre';
+              final documento = data['documento'] ?? '';
+              final fingerprintId = data['fingerprintId'] ?? 0;
+              final activo = data['activo'] ?? false;
+
+              return ListTile(
+                leading: Icon(
+                  activo ? Icons.person : Icons.person_off,
+                  color: activo ? Colors.blue : Colors.grey,
+                ),
+                title: Text(nombre),
+                subtitle: Text('Documento: $documento • Huella ID: $fingerprintId'),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Switch(
+                      value: activo,
+                      onChanged: (nuevoValor) {
+                        _cambiarEstadoUsuario(doc.id, nuevoValor);
+                      },
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete, color: Colors.red),
+                      tooltip: 'Eliminar usuario',
+                      onPressed: () => _confirmarEliminar(context, doc.id, nombre),
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (context) => const AgregarUsuarioScreen()),
+          );
+        },
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+}
+
+// ---------- PANTALLA: FORMULARIO PARA AGREGAR USUARIO (ahora vía enrolamiento) ----------
+class AgregarUsuarioScreen extends StatefulWidget {
+  const AgregarUsuarioScreen({super.key});
+
+  @override
+  State<AgregarUsuarioScreen> createState() => _AgregarUsuarioScreenState();
+}
+
+class _AgregarUsuarioScreenState extends State<AgregarUsuarioScreen> {
+  final _nombreController = TextEditingController();
+  final _documentoController = TextEditingController();
+
+  bool _enviandoComando = false;
+  bool _esperandoHuella = false; // true cuando ya enviamos el comando y esperamos al ESP32
+
+  // Envía el comando al ESP32 para que pida la huella y la asigne a este nuevo usuario
+  Future<void> _solicitarEnrolamiento() async {
+    if (_nombreController.text.trim().isEmpty || _documentoController.text.trim().isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Por favor completa nombre y documento')),
+      );
+      return;
+    }
+
+    setState(() => _enviandoComando = true);
+
+    try {
+      await FirebaseFirestore.instance.collection('comandos').doc('dispositivo1').set({
+        'accion': 'enrolar_nuevo',
+        'nombreNuevo': _nombreController.text.trim(),
+        'documentoNuevo': _documentoController.text.trim(),
+        'usuarioId': null,
+        'fingerprintId': null,
+        'estado': 'pendiente',
+        'timestamp': Timestamp.now(),
+      });
+
+      setState(() {
+        _enviandoComando = false;
+        _esperandoHuella = true; // pasamos a la pantalla de espera
+      });
+    } catch (e) {
+      setState(() => _enviandoComando = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error al enviar comando: $e')),
+        );
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _nombreController.dispose();
+    _documentoController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Si ya enviamos el comando, mostramos la pantalla de espera en vez del formulario
+    if (_esperandoHuella) {
+      return _PantallaEsperandoHuella(
+        nombre: _nombreController.text.trim(),
+        documento: _documentoController.text.trim(),
+      );
+    }
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Agregar Usuario')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          children: [
+            TextField(
+              controller: _nombreController,
+              decoration: const InputDecoration(
+                labelText: 'Nombre completo',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _documentoController,
+              decoration: const InputDecoration(
+                labelText: 'Documento (cédula)',
+                border: OutlineInputBorder(),
+              ),
+              keyboardType: TextInputType.number,
+            ),
+            const SizedBox(height: 24),
+            // Ya no hay campo de fingerprintId — se asigna automáticamente
+            _enviandoComando
+                ? const CircularProgressIndicator()
+                : ElevatedButton.icon(
+                    icon: const Icon(Icons.fingerprint),
+                    label: const Text('Registrar huella y guardar'),
+                    onPressed: _solicitarEnrolamiento,
+                  ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---------- PANTALLA DE ESPERA: mientras el ESP32 procesa el enrolamiento ----------
+class _PantallaEsperandoHuella extends StatelessWidget {
+  final String nombre;
+  final String documento;
+
+  const _PantallaEsperandoHuella({required this.nombre, required this.documento});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Esperando huella')),
+      body: StreamBuilder<DocumentSnapshot>(
+        stream: FirebaseFirestore.instance
+            .collection('comandos')
+            .doc('dispositivo1')
+            .snapshots(),
+        builder: (context, snapshot) {
+          if (!snapshot.hasData || !snapshot.data!.exists) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final data = snapshot.data!.data() as Map<String, dynamic>;
+          final estado = data['estado'] ?? 'pendiente';
+          final fingerprintId = data['fingerprintId'];
+
+          // Cuando el ESP32 confirma el id, recién aquí creamos el usuario real en Firestore
+          if (estado == 'completado' && fingerprintId != null) {
+            return FutureBuilder(
+              future: _crearUsuarioFinal(fingerprintId),
+              builder: (context, snapshotCrear) {
+                if (snapshotCrear.connectionState != ConnectionState.done) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                // Ya terminó de crear el usuario: mostramos confirmación y, tras 2 segundos,
+                // limpiamos el comando y volvemos a la lista
+                Future.delayed(const Duration(seconds: 2), () async {
+                  if (context.mounted) {
+                    Navigator.of(context).pop(); // cierra esta pantalla de espera
+                    Navigator.of(context).pop(); // cierra el formulario también, vuelve a la lista
+                  }
+
+                  // Limpiamos el comando DESPUÉS de navegar, cuando esta pantalla ya no existe
+                  // y por lo tanto no hay ningún StreamBuilder escuchando este documento
+                  await FirebaseFirestore.instance.collection('comandos').doc('dispositivo1').set({
+                    'accion': 'ninguno',
+                    'estado': 'completado',
+                    'timestamp': Timestamp.now(),
+                  });
+                });
+
+                return Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.check_circle, color: Colors.green, size: 64),
+                      const SizedBox(height: 16),
+                      Text('¡$nombre fue registrado correctamente!', textAlign: TextAlign.center),
+                    ],
+                  ),
+                );
+              },
+            );
+          }
+
+          // Mientras tanto, mostramos la animación de espera
+          return Center(
+            child: Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.fingerprint, size: 80, color: Colors.blue),
+                  const SizedBox(height: 24),
+                  Text(
+                    'Pide a $nombre que coloque su huella en el sensor',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 16),
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 16),
+                  const Text('Esperando confirmación del dispositivo...'),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  // Crea el documento real en "usuarios" una vez que el ESP32 confirmó el fingerprintId
+  Future<void> _crearUsuarioFinal(int fingerprintId) async {
+    // Evitamos crear duplicados si por algún hot-reload se vuelve a llamar
+    final yaExiste = await FirebaseFirestore.instance
+        .collection('usuarios')
+        .where('fingerprintId', isEqualTo: fingerprintId)
+        .where('documento', isEqualTo: documento)
+        .limit(1)
+        .get();
+
+    if (yaExiste.docs.isNotEmpty) return; // ya se creó antes, no duplicar
+
+    await FirebaseFirestore.instance
+        .collection('usuarios')
+        .doc(fingerprintId.toString()) // el ID del documento = el fingerprintId
+        .set({
+      'nombre': nombre,
+      'documento': documento,
+      'fingerprintId': fingerprintId,
+      'activo': true,
+      'fechaRegistro': Timestamp.now(),
+    });
+
+    // NOTA: ya no limpiamos "comandos/dispositivo1" aquí — se mueve al Future.delayed
+    // de arriba, para no modificar el documento mientras el StreamBuilder todavía lo escucha.
+  }
+}
+
+// ---------- PANTALLA: LISTA DE PERMISOS (sin cambios) ----------
+class PermisosScreen extends StatelessWidget {
+  const PermisosScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Gestionar Permisos')),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance
+            .collection('permisos')
+            .orderBy('fecha', descending: true)
+            .snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return Center(child: Text('Error: ${snapshot.error}'));
+          }
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const Center(child: Text('Aún no hay permisos registrados.'));
+          }
+
+          final docs = snapshot.data!.docs;
+
+          return ListView.builder(
+            itemCount: docs.length,
+            itemBuilder: (context, index) {
+              final data = docs[index].data() as Map<String, dynamic>;
+
+              final nombre = data['nombre'] ?? 'Sin nombre';
+              final fecha = data['fecha'] ?? '';
+              final motivo = data['motivo'] ?? '';
+              final estado = data['estado'] ?? 'autorizado';
+
+              Color color;
+              IconData icono;
+              switch (estado) {
+                case 'autorizado':
+                  color = Colors.orange;
+                  icono = Icons.schedule;
+                  break;
+                case 'en_curso':
+                  color = Colors.blue;
+                  icono = Icons.directions_walk;
+                  break;
+                case 'completado':
+                  color = Colors.green;
+                  icono = Icons.check_circle;
+                  break;
+                default:
+                  color = Colors.grey;
+                  icono = Icons.help_outline;
+              }
+
+              return ListTile(
+                leading: Icon(icono, color: color),
+                title: Text(nombre),
+                subtitle: Text('Fecha: $fecha${motivo.isNotEmpty ? ' • $motivo' : ''}'),
+                trailing: Text(
+                  estado,
+                  style: TextStyle(color: color, fontWeight: FontWeight.bold),
+                ),
+              );
+            },
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(builder: (context) => const AgregarPermisoScreen()),
+          );
+        },
+        child: const Icon(Icons.add),
+      ),
+    );
+  }
+}
+
+// ---------- PANTALLA: FORMULARIO PARA AUTORIZAR PERMISO (sin cambios) ----------
+class AgregarPermisoScreen extends StatefulWidget {
+  const AgregarPermisoScreen({super.key});
+
+  @override
+  State<AgregarPermisoScreen> createState() => _AgregarPermisoScreenState();
+}
+
+class _AgregarPermisoScreenState extends State<AgregarPermisoScreen> {
+  final _motivoController = TextEditingController();
+
+  String? _usuarioSeleccionadoId;
+  String? _usuarioSeleccionadoNombre;
+  DateTime _fechaSeleccionada = DateTime.now();
+
+  bool _guardando = false;
+
+  Future<void> _seleccionarFecha() async {
+    final fecha = await showDatePicker(
+      context: context,
+      initialDate: _fechaSeleccionada,
+      firstDate: DateTime.now().subtract(const Duration(days: 1)),
+      lastDate: DateTime.now().add(const Duration(days: 90)),
+    );
+    if (fecha != null) {
+      setState(() {
+        _fechaSeleccionada = fecha;
+      });
+    }
+  }
+
+  Future<void> _guardarPermiso() async {
+    if (_usuarioSeleccionadoId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Selecciona un trabajador')),
+      );
+      return;
+    }
+
+    setState(() {
+      _guardando = true;
+    });
+
+    try {
+      final fechaTexto =
+          '${_fechaSeleccionada.year}-${_fechaSeleccionada.month.toString().padLeft(2, '0')}-${_fechaSeleccionada.day.toString().padLeft(2, '0')}';
+
+      await FirebaseFirestore.instance.collection('permisos').add({
+        'usuarioId': _usuarioSeleccionadoId,
+        'nombre': _usuarioSeleccionadoNombre,
+        'fecha': fechaTexto,
+        'motivo': _motivoController.text.trim(),
+        'estado': 'autorizado',
+        'horaSalidaReal': null,
+        'horaRegresoReal': null,
+        'minutosDescontados': null,
+      });
+
+      if (context.mounted) {
+        Navigator.pop(context);
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error al guardar: $e')),
+        );
+      }
+    } finally {
+      setState(() {
+        _guardando = false;
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _motivoController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Autorizar Permiso')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Trabajador', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance.collection('usuarios').snapshots(),
+              builder: (context, snapshot) {
+                if (!snapshot.hasData) {
+                  return const CircularProgressIndicator();
+                }
+
+                final usuarios = snapshot.data!.docs;
+
+                return DropdownButtonFormField<String>(
+                  decoration: const InputDecoration(border: OutlineInputBorder()),
+                  hint: const Text('Selecciona un trabajador'),
+                  value: _usuarioSeleccionadoId,
+                  items: usuarios.map((doc) {
+                    final data = doc.data() as Map<String, dynamic>;
+                    final nombre = data['nombre'] ?? 'Sin nombre';
+                    return DropdownMenuItem<String>(
+                      value: doc.id,
+                      child: Text(nombre),
+                    );
+                  }).toList(),
+                  onChanged: (idSeleccionado) {
+                    final docSeleccionado = usuarios.firstWhere((d) => d.id == idSeleccionado);
+                    final data = docSeleccionado.data() as Map<String, dynamic>;
+                    setState(() {
+                      _usuarioSeleccionadoId = idSeleccionado;
+                      _usuarioSeleccionadoNombre = data['nombre'];
+                    });
+                  },
+                );
+              },
+            ),
+            const SizedBox(height: 20),
+            const Text('Fecha del permiso', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              icon: const Icon(Icons.calendar_today),
+              label: Text(
+                '${_fechaSeleccionada.day}/${_fechaSeleccionada.month}/${_fechaSeleccionada.year}',
+              ),
+              onPressed: _seleccionarFecha,
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _motivoController,
+              decoration: const InputDecoration(
+                labelText: 'Motivo (opcional)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 24),
+            _guardando
+                ? const CircularProgressIndicator()
+                : ElevatedButton(
+                    onPressed: _guardarPermiso,
+                    child: const Text('Autorizar Permiso'),
+                  ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// CÁLCULO DE JORNADAS A PARTIR DE "accesos"
+// El ESP32 solo registra entrada/salida con hora; aquí se
+// reconstruye la jornada de un usuario en un día dado.
+// ═══════════════════════════════════════════════════════
+
+class ResumenJornada {
+  final String nombre;
+  final int fingerprintId;
+  final DateTime? horaEntrada;   // primera entrada del día
+  final DateTime? horaSalida;    // última salida (null si sigue dentro)
+  final bool enCurso;
+  final int cantidadEntradas;
+  final int cantidadSalidas;
+  final int segundosTrabajados;
+  final double horasTrabajadas;
+  final double horasExtras;
+  final double horasFaltantes;
+
+  ResumenJornada({
+    required this.nombre,
+    required this.fingerprintId,
+    required this.horaEntrada,
+    required this.horaSalida,
+    required this.enCurso,
+    required this.cantidadEntradas,
+    required this.cantidadSalidas,
+    required this.segundosTrabajados,
+    required this.horasTrabajadas,
+    required this.horasExtras,
+    required this.horasFaltantes,
+  });
+
+  // Para nómina: se cuenta como día trabajado si hubo al menos
+  // una entrada y una salida.
+  bool get jornadaCompleta => cantidadEntradas > 0 && cantidadSalidas > 0;
+}
+
+// Reconstruye la jornada de un usuario emparejando entrada/salida
+// en orden cronológico. Soporta varias entradas y salidas en el
+// mismo día (permisos, salidas a almorzar, etc.) sumando cada sesión.
+ResumenJornada calcularResumenDia({
+  required String nombre,
+  required int fingerprintId,
+  required List<QueryDocumentSnapshot> accesosDelDia,
+  required DateTime ahora,
+}) {
+  // Los accesos "denegado" no abren ni cierran sesión
+  final eventos = accesosDelDia.where((doc) {
+    final data = doc.data() as Map<String, dynamic>;
+    return data['resultado'] == 'permitido';
+  }).toList();
+
+  eventos.sort((a, b) {
+    final ta = (a.data() as Map<String, dynamic>)['timestamp'] as Timestamp?;
+    final tb = (b.data() as Map<String, dynamic>)['timestamp'] as Timestamp?;
+    return (ta?.toDate() ?? DateTime(0)).compareTo(tb?.toDate() ?? DateTime(0));
+  });
+
+  DateTime? horaEntrada;
+  DateTime? horaSalida;
+  DateTime? entradaAbierta;
+  int segundosTotales = 0;
+  int cantidadEntradas = 0;
+  int cantidadSalidas = 0;
+
+  for (final doc in eventos) {
+    final data = doc.data() as Map<String, dynamic>;
+    final tipo = data['tipo'] as String? ?? '';
+    final ts = (data['timestamp'] as Timestamp?)?.toDate();
+    if (ts == null) continue;
+
+    if (tipo == 'entrada') {
+      cantidadEntradas++;
+      horaEntrada ??= ts;
+      entradaAbierta = ts;
+    } else if (tipo == 'salida') {
+      cantidadSalidas++;
+      horaSalida = ts;
+      if (entradaAbierta != null) {
+        final duracion = ts.difference(entradaAbierta).inSeconds;
+        if (duracion > 0) segundosTotales += duracion;
+        entradaAbierta = null;
+      }
+      // una salida sin entrada previa (dato suelto) se ignora
+    }
+  }
+
+  final enCurso = entradaAbierta != null;
+
+  // Sesión abierta: sumamos hasta el instante actual
+  if (enCurso) {
+    final transcurrido = ahora.difference(entradaAbierta!).inSeconds;
+    if (transcurrido > 0) segundosTotales += transcurrido;
+  }
+
+  final horasTrabajadas = segundosTotales / 3600.0;
+  double horasExtras, horasFaltantes;
+  if (horasTrabajadas > 8.0) {
+    horasExtras = horasTrabajadas - 8.0;
+    horasFaltantes = 0;
+  } else {
+    horasExtras = 0;
+    horasFaltantes = 8.0 - horasTrabajadas;
+  }
+
+  return ResumenJornada(
+    nombre: nombre,
+    fingerprintId: fingerprintId,
+    horaEntrada: horaEntrada,
+    horaSalida: enCurso ? null : horaSalida,
+    enCurso: enCurso,
+    cantidadEntradas: cantidadEntradas,
+    cantidadSalidas: cantidadSalidas,
+    segundosTrabajados: segundosTotales,
+    horasTrabajadas: double.parse(horasTrabajadas.toStringAsFixed(2)),
+    horasExtras: double.parse(horasExtras.toStringAsFixed(2)),
+    horasFaltantes: double.parse(horasFaltantes.toStringAsFixed(2)),
+  );
+}
+
+// ---------- PANTALLA: REPORTE DE JORNADAS (con navegación por día) ----------
+
+class JornadasScreen extends StatefulWidget {
+  const JornadasScreen({super.key});
+
+  @override
+  State<JornadasScreen> createState() => _JornadasScreenState();
+}
+
+class _JornadasScreenState extends State<JornadasScreen> {
+  DateTime _fechaSeleccionada = DateTime.now();
+  late Stream<QuerySnapshot> _accesosStream;
+  Timer? _tickTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _actualizarStream();
+    // Refresca las tarjetas "en curso" cada 30 s sin volver a leer Firestore
+    // (recalcula localmente usando los mismos datos ya cargados).
+    _tickTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _tickTimer?.cancel();
+    super.dispose();
+  }
+
+  void _actualizarStream() {
+    final inicio = DateTime(_fechaSeleccionada.year, _fechaSeleccionada.month, _fechaSeleccionada.day);
+    final fin = inicio.add(const Duration(days: 1));
+    _accesosStream = FirebaseFirestore.instance
+        .collection('accesos')
+        .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(inicio))
+        .where('timestamp', isLessThan: Timestamp.fromDate(fin))
+        .orderBy('timestamp')
+        .snapshots();
+  }
+
+  bool get _esHoy {
+    final hoy = DateTime.now();
+    return _fechaSeleccionada.year == hoy.year &&
+        _fechaSeleccionada.month == hoy.month &&
+        _fechaSeleccionada.day == hoy.day;
+  }
+
+  void _cambiarDia(int delta) {
+    setState(() {
+      _fechaSeleccionada = _fechaSeleccionada.add(Duration(days: delta));
+      _actualizarStream();
+    });
+  }
+
+  Future<void> _abrirSelectorFecha() async {
+    final fecha = await showDatePicker(
+      context: context,
+      initialDate: _fechaSeleccionada,
+      firstDate: DateTime(2024, 1, 1),
+      lastDate: DateTime.now(),
+    );
+    if (fecha != null) {
+      setState(() {
+        _fechaSeleccionada = fecha;
+        _actualizarStream();
+      });
+    }
+  }
+
+  String get _fechaFormateada {
+    const dias = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
+    const meses = [
+      'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio',
+      'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre',
+    ];
+    final nombreDia = dias[_fechaSeleccionada.weekday - 1];
+    return '$nombreDia ${_fechaSeleccionada.day} de ${meses[_fechaSeleccionada.month - 1]}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Reporte de Jornadas')),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.chevron_left),
+                  onPressed: () => _cambiarDia(-1),
+                ),
+                GestureDetector(
+                  onTap: _abrirSelectorFecha,
+                  child: Row(
+                    children: [
+                      Text(
+                        _fechaFormateada,
+                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(width: 6),
+                      Icon(Icons.calendar_today, size: 16, color: Colors.grey.shade600),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.chevron_right),
+                  onPressed: _esHoy ? null : () => _cambiarDia(1),
+                ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: _accesosStream,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Center(child: Text('Error: ${snapshot.error}'));
+                }
+
+                final docs = snapshot.data?.docs ?? [];
+                if (docs.isEmpty) {
+                  return const Center(child: Text('No hay registros este día.'));
+                }
+
+                // Agrupamos los eventos por usuario (fingerprintId)
+                final Map<int, List<QueryDocumentSnapshot>> porUsuario = {};
+                final Map<int, String> nombresPorId = {};
+                for (final doc in docs) {
+                  final data = doc.data() as Map<String, dynamic>;
+                  final id = (data['fingerprintId'] ?? 0) as int;
+                  porUsuario.putIfAbsent(id, () => []).add(doc);
+                  nombresPorId[id] = data['nombre'] ?? 'Desconocido';
+                }
+
+                final ahora = DateTime.now();
+                final resumenes = porUsuario.entries.map((entry) {
+                  return calcularResumenDia(
+                    nombre: nombresPorId[entry.key] ?? 'Desconocido',
+                    fingerprintId: entry.key,
+                    accesosDelDia: entry.value,
+                    ahora: ahora,
+                  );
+                }).toList();
+
+                resumenes.sort((a, b) => a.nombre.compareTo(b.nombre));
+
+                return ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  itemCount: resumenes.length,
+                  itemBuilder: (context, index) {
+                    return _TarjetaJornada(resumen: resumenes[index]);
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// TARJETA DE JORNADA — diseño definitivo
+// ═══════════════════════════════════════════════════════
+class _TarjetaJornada extends StatelessWidget {
+  final ResumenJornada resumen;
+
+  const _TarjetaJornada({required this.resumen});
+
+  String _formatearDuracion(double horas) {
+    if (horas < 0) horas = 0;
+    final totalMinutos = (horas * 60).round();
+    final h = totalMinutos ~/ 60;
+    final m = totalMinutos % 60;
+    return '$h h ${m.toString().padLeft(2, '0')} min';
+  }
+
+  String _formatearHora(DateTime? dt) {
+    if (dt == null) return '--:--';
+    return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final etiquetaEstado = resumen.enCurso ? 'Trabajando' : 'Finalizada';
+    final colorEstado = resumen.enCurso ? Colors.green : Colors.grey.shade700;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: Colors.grey.shade300),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  resumen.nombre,
+                  style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.circle, color: colorEstado, size: 12),
+                  const SizedBox(width: 6),
+                  Text(
+                    etiquetaEstado,
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: colorEstado),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _filaDato('Entrada', _formatearHora(resumen.horaEntrada)),
+          const SizedBox(height: 4),
+          _filaDato('Salida', resumen.enCurso ? '--:--' : _formatearHora(resumen.horaSalida)),
+          const SizedBox(height: 4),
+          _filaDato('Trabajadas', _formatearDuracion(resumen.horasTrabajadas)),
+          const SizedBox(height: 4),
+          _filaDato('Extras', _formatearDuracion(resumen.horasExtras)),
+          const SizedBox(height: 4),
+          _filaDato('Faltantes', _formatearDuracion(resumen.horasFaltantes)),
+        ],
+      ),
+    );
+  }
+
+  Widget _filaDato(String etiqueta, String valor) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 90,
+          child: Text(etiqueta, style: TextStyle(fontSize: 13, color: Colors.grey.shade600)),
+        ),
+        Text(valor, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+      ],
+    );
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════
+// NÓMINA: resumen mensual por trabajador
+// ═══════════════════════════════════════════════════════
+class NominaScreen extends StatefulWidget {
+  const NominaScreen({super.key});
+
+  @override
+  State<NominaScreen> createState() => _NominaScreenState();
+}
+
+class _NominaScreenState extends State<NominaScreen> {
+  DateTime _mesSeleccionado = DateTime(DateTime.now().year, DateTime.now().month, 1);
+
+  void _cambiarMes(int delta) {
+    setState(() {
+      _mesSeleccionado = DateTime(_mesSeleccionado.year, _mesSeleccionado.month + delta, 1);
+    });
+  }
+
+  String get _nombreMes {
+    const meses = [
+      'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
+    ];
+    return '${meses[_mesSeleccionado.month - 1]} ${_mesSeleccionado.year}';
+  }
+
+  int get _diasDelMes {
+    final primerDiaSiguienteMes = DateTime(_mesSeleccionado.year, _mesSeleccionado.month + 1, 1);
+    return primerDiaSiguienteMes.subtract(const Duration(days: 1)).day;
+  }
+
+  // Cuenta días laborales (lunes a sábado) SOLO hasta hoy si es el mes actual.
+  // Si es un mes pasado, cuenta el mes completo.
+  int get _diasLaborales {
+    final hoy = DateTime.now();
+    final esMesActual = _mesSeleccionado.year == hoy.year && _mesSeleccionado.month == hoy.month;
+    final ultimoDiaAEvaluar = esMesActual ? hoy.day : _diasDelMes;
+
+    int contador = 0;
+    for (int dia = 1; dia <= ultimoDiaAEvaluar; dia++) {
+      final fecha = DateTime(_mesSeleccionado.year, _mesSeleccionado.month, dia);
+      if (fecha.weekday != DateTime.sunday) {
+        contador++;
+      }
+    }
+    return contador;
+  }
+
+  String get _prefijoFecha {
+    return '${_mesSeleccionado.year}-${_mesSeleccionado.month.toString().padLeft(2, '0')}';
+  }
+  // Getter a nivel de clase, usado por el IconButton para saber si deshabilitar la flecha →
+  bool get _esMesActual {
+    final hoy = DateTime.now();
+    return _mesSeleccionado.year == hoy.year && _mesSeleccionado.month == hoy.month;
+  }
+
+  // Abre un selector simple de mes y año (sin día).
+  // Siempre inicia en el mes/año ACTUAL, no en el que estabas viendo,
+  // para evitar inconsistencias con valores fuera de rango.
+  Future<void> _abrirSelectorMesAnio() async {
+    final hoy = DateTime.now();
+    int mesTemp = hoy.month;
+    int anioTemp = hoy.year;
+
+    const meses = [
+      'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
+    ];
+
+    final resultado = await showDialog<DateTime>(
+      context: context,
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setStateDialog) {
+            // Meses disponibles: si el año elegido es el actual, solo hasta el mes actual
+            final mesesDisponibles = List.generate(12, (i) => i + 1)
+                .where((m) => anioTemp < hoy.year || m <= hoy.month)
+                .toList();
+
+            return AlertDialog(
+              title: const Text('Selecciona mes y año'),
+              content: Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<int>(
+                      value: mesTemp,
+                      decoration: const InputDecoration(labelText: 'Mes'),
+                      items: mesesDisponibles
+                          .map((m) => DropdownMenuItem(value: m, child: Text(meses[m - 1])))
+                          .toList(),
+                      onChanged: (valor) {
+                        if (valor != null) setStateDialog(() => mesTemp = valor);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: DropdownButtonFormField<int>(
+                      value: anioTemp,
+                      decoration: const InputDecoration(labelText: 'Año'),
+                      items: List.generate(
+                        hoy.year - 2024 + 1,
+                        (i) => 2024 + i,
+                      ).map((a) => DropdownMenuItem(value: a, child: Text('$a'))).toList(),
+                      onChanged: (valor) {
+                        if (valor != null) {
+                          setStateDialog(() {
+                            anioTemp = valor;
+                            // Si al cambiar de año el mes seleccionado queda fuera de rango
+                            // (ej: estaba en agosto y el nuevo año es el actual, pero hoy es junio),
+                            // lo ajustamos automáticamente al mes actual para no romper el dropdown.
+                            if (anioTemp == hoy.year && mesTemp > hoy.month) {
+                              mesTemp = hoy.month;
+                            }
+                          });
+                        }
+                      },
+                    ),
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancelar'),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context, DateTime(anioTemp, mesTemp, 1)),
+                  child: const Text('Aceptar'),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+
+    if (resultado != null) {
+      setState(() {
+        _mesSeleccionado = resultado;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Nómina')),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(12.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                IconButton(
+                icon: const Icon(Icons.chevron_left),
+                onPressed: () => _cambiarMes(-1),
+              ),
+              GestureDetector(
+                onTap: _abrirSelectorMesAnio,
+                child: Row(
+                  children: [
+                    Text(
+                      _nombreMes,
+                      style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                    ),
+                    const SizedBox(width: 6),
+                    Icon(Icons.calendar_today, size: 16, color: Colors.grey.shade600),
+                  ],
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.chevron_right),
+                // No permitimos avanzar más allá del mes actual
+                onPressed: _esMesActual ? null : () => _cambiarMes(1),
+              ),
+              ],
+            ),
+          ),
+
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseFirestore.instance.collection('usuarios').snapshots(),
+              builder: (context, snapshotUsuarios) {
+                if (!snapshotUsuarios.hasData) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+
+                final usuarios = snapshotUsuarios.data!.docs;
+
+                if (usuarios.isEmpty) {
+                  return const Center(child: Text('No hay usuarios registrados.'));
+                }
+
+                return ListView.builder(
+                  padding: const EdgeInsets.only(bottom: 80),
+                  itemCount: usuarios.length,
+                  itemBuilder: (context, index) {
+                    final usuarioDoc = usuarios[index];
+                    final usuarioData = usuarioDoc.data() as Map<String, dynamic>;
+                    final nombre = usuarioData['nombre'] ?? 'Sin nombre';
+
+                    return StreamBuilder<QuerySnapshot>(
+                      stream: FirebaseFirestore.instance
+                          .collection('jornadas')
+                          .where('usuarioId', isEqualTo: usuarioDoc.id)
+                          .snapshots(),
+                      builder: (context, snapshotJornadas) {
+                        if (!snapshotJornadas.hasData) {
+                          return const SizedBox.shrink();
+                        }
+
+                        final jornadasDelMes = snapshotJornadas.data!.docs.where((doc) {
+                          final data = doc.data() as Map<String, dynamic>;
+                          final fecha = data['fecha'] as String? ?? '';
+                          return fecha.startsWith(_prefijoFecha);
+                        }).toList();
+
+                        final diasTrabajados = jornadasDelMes
+                            .where((doc) => (doc.data() as Map<String, dynamic>)['jornadaCompleta'] == true)
+                            .length;
+
+                        double horasTotales = 0;
+                        double horasExtraTotales = 0;
+                        for (final doc in jornadasDelMes) {
+                          final data = doc.data() as Map<String, dynamic>;
+                          horasTotales += (data['horasTrabajadas'] ?? 0).toDouble();
+                          horasExtraTotales += (data['horasExtra'] ?? 0).toDouble();
+                        }
+
+                        final faltas = _diasLaborales - diasTrabajados;
+                        final faltasReales = faltas < 0 ? 0 : faltas;
+
+                        final partes = nombre.trim().split(' ');
+                        final iniciales = partes.length >= 2
+                            ? '${partes[0][0]}${partes[1][0]}'.toUpperCase()
+                            : (partes.isNotEmpty ? partes[0][0].toUpperCase() : '?');
+
+                        return Card(
+                          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          child: ListTile(
+                            leading: CircleAvatar(
+                              backgroundColor: Colors.blue.shade50,
+                              child: Text(
+                                iniciales,
+                                style: TextStyle(color: Colors.blue.shade700, fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                            title: Text(nombre),
+                            // Ahora solo mostramos los días trabajados, sin el "/total"
+                            subtitle: Text(
+                              '$diasTrabajados días • $faltasReales faltas',
+                              style: TextStyle(
+                                color: faltasReales == 0 ? Colors.green : Colors.red,
+                              ),
+                            ),
+                            trailing: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                Text(
+                                  '${horasTotales.toStringAsFixed(0)} h',
+                                  style: const TextStyle(fontWeight: FontWeight.bold),
+                                ),
+                                if (horasExtraTotales > 0)
+                                  Text(
+                                    '+${horasExtraTotales.toStringAsFixed(0)}h extra',
+                                    style: const TextStyle(color: Colors.green, fontSize: 12),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () {
+          Navigator.push(
+            context,
+            MaterialPageRoute(
+              builder: (context) => NominaDetalleScreen(mesSeleccionado: _mesSeleccionado),
+            ),
+          );
+        },
+        child: const Icon(Icons.table_chart),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════
+// NÓMINA: detalle día por día (grid con scroll horizontal)
+// ═══════════════════════════════════════════════════════
+class NominaDetalleScreen extends StatelessWidget {
+  final DateTime mesSeleccionado;
+  const NominaDetalleScreen({super.key, required this.mesSeleccionado});
+
+  String get _nombreMes {
+    const meses = [
+      'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+      'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
+    ];
+    return '${meses[mesSeleccionado.month - 1]} ${mesSeleccionado.year}';
+  }
+
+  int get _diasDelMes {
+    final primerDiaSiguienteMes = DateTime(mesSeleccionado.year, mesSeleccionado.month + 1, 1);
+    return primerDiaSiguienteMes.subtract(const Duration(days: 1)).day;
+  }
+
+  String get _prefijoFecha {
+    return '${mesSeleccionado.year}-${mesSeleccionado.month.toString().padLeft(2, '0')}';
+  }
+
+  String _letraDia(int dia) {
+    final fecha = DateTime(mesSeleccionado.year, mesSeleccionado.month, dia);
+    const letras = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
+    return letras[fecha.weekday - 1];
+  }
+
+  bool _esDomingo(int dia) {
+    final fecha = DateTime(mesSeleccionado.year, mesSeleccionado.month, dia);
+    return fecha.weekday == DateTime.sunday;
+  }
+
+  // NUEVO: determina si ese día del mes seleccionado todavía no ha llegado
+  bool _esDiaFuturo(int dia) {
+    final fecha = DateTime(mesSeleccionado.year, mesSeleccionado.month, dia);
+    final hoy = DateTime.now();
+    final hoySinHora = DateTime(hoy.year, hoy.month, hoy.day);
+    return fecha.isAfter(hoySinHora);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: Text('Detalle - $_nombreMes')),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance.collection('usuarios').snapshots(),
+        builder: (context, snapshotUsuarios) {
+          if (!snapshotUsuarios.hasData) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          final usuarios = snapshotUsuarios.data!.docs;
+
+          if (usuarios.isEmpty) {
+            return const Center(child: Text('No hay usuarios registrados.'));
+          }
+
+          return StreamBuilder<QuerySnapshot>(
+            stream: FirebaseFirestore.instance.collection('jornadas').snapshots(),
+            builder: (context, snapshotJornadas) {
+              if (!snapshotJornadas.hasData) {
+                return const Center(child: CircularProgressIndicator());
+              }
+
+              final jornadasDelMes = snapshotJornadas.data!.docs.where((doc) {
+                final data = doc.data() as Map<String, dynamic>;
+                final fecha = data['fecha'] as String? ?? '';
+                return fecha.startsWith(_prefijoFecha);
+              }).toList();
+
+              final Map<String, bool> mapaAsistencia = {};
+              for (final doc in jornadasDelMes) {
+                final data = doc.data() as Map<String, dynamic>;
+                final usuarioId = data['usuarioId'] as String? ?? '';
+                final fecha = data['fecha'] as String? ?? '';
+                final completa = data['jornadaCompleta'] == true;
+                if (fecha.length >= 10 && completa) {
+                  final dia = int.tryParse(fecha.substring(8, 10)) ?? 0;
+                  mapaAsistencia['${usuarioId}_$dia'] = true;
+                }
+              }
+
+              return Padding(
+                padding: const EdgeInsets.all(12.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: DataTable(
+                          columnSpacing: 16,
+                          columns: [
+                            const DataColumn(label: Text('Trabajador')),
+                            for (int dia = 1; dia <= _diasDelMes; dia++)
+                              DataColumn(
+                                label: Container(
+                                  width: 28,
+                                  color: _esDomingo(dia) ? Colors.grey.shade200 : null,
+                                  child: Text(
+                                    '${_letraDia(dia)}\n$dia',
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 11,
+                                      color: _esDomingo(dia) ? Colors.grey.shade500 : Colors.grey.shade700,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                          ],
+                          rows: usuarios.map((usuarioDoc) {
+                            final usuarioData = usuarioDoc.data() as Map<String, dynamic>;
+                            final nombre = usuarioData['nombre'] ?? 'Sin nombre';
+
+                            return DataRow(
+                              cells: [
+                                DataCell(Text(nombre, style: const TextStyle(fontWeight: FontWeight.w500))),
+                                for (int dia = 1; dia <= _diasDelMes; dia++)
+                                  DataCell(_celdaAsistencia(usuarioDoc.id, dia, mapaAsistencia)),
+                              ],
+                            );
+                          }).toList(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 16,
+                      children: [
+                        Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.check, color: Colors.green, size: 16),
+                          const SizedBox(width: 4),
+                          const Text('trabajó', style: TextStyle(fontSize: 12)),
+                        ]),
+                        Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.close, color: Colors.red, size: 16),
+                          const SizedBox(width: 4),
+                          const Text('faltó', style: TextStyle(fontSize: 12)),
+                        ]),
+                        Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.star, color: Colors.blue, size: 16),
+                          const SizedBox(width: 4),
+                          const Text('domingo laborado', style: TextStyle(fontSize: 12)),
+                        ]),
+                      ],
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  // Decide qué ícono mostrar en cada celda del grid
+  Widget _celdaAsistencia(String usuarioId, int dia, Map<String, bool> mapaAsistencia) {
+    // NUEVO: si el día todavía no ha llegado, dejamos la celda vacía
+    if (_esDiaFuturo(dia)) {
+      return const SizedBox(width: 18);
+    }
+
+    final trabajo = mapaAsistencia['${usuarioId}_$dia'] == true;
+    final domingo = _esDomingo(dia);
+
+    if (domingo) {
+      return trabajo
+          ? const Icon(Icons.star, color: Colors.blue, size: 18)
+          : const SizedBox(width: 18);
+    } else {
+      return trabajo
+          ? const Icon(Icons.check, color: Colors.green, size: 18)
+          : const Icon(Icons.close, color: Colors.red, size: 18);
+    }
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════
+// AUTH GATE — decide si mostrar Login o la app
+// ═══════════════════════════════════════════════════════
+class AuthGate extends StatelessWidget {
+  const AuthGate({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(
+            body: Center(child: CircularProgressIndicator()),
+          );
+        }
+        if (snapshot.hasData) {
+          return const HomeScreen();
+        }
+        return const LoginScreen();
+      },
+    );
+  }
+}
+
+
+// ═══════════════════════════════════════════════════════
+// LOGIN SCREEN
+// ═══════════════════════════════════════════════════════
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
+
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _documentoController = TextEditingController();
+  final _passwordController  = TextEditingController();
+
+  bool _cargando        = false;
+  bool _verPassword     = false;
+  String? _errorMensaje;
+
+  String _documentoAEmail(String documento) =>
+      '${documento.trim()}@acceso.app';
+
+  Future<void> _iniciarSesion() async {
+    final documento = _documentoController.text.trim();
+    final password  = _passwordController.text;
+
+    if (documento.isEmpty || password.isEmpty) {
+      setState(() => _errorMensaje = 'Completa todos los campos.');
+      return;
+    }
+
+    setState(() {
+      _cargando     = true;
+      _errorMensaje = null;
+    });
+
+    try {
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email:    _documentoAEmail(documento),
+        password: password,
+      );
+    } on FirebaseAuthException catch (e) {
+      setState(() {
+        switch (e.code) {
+          case 'user-not-found':
+          case 'invalid-credential':
+            _errorMensaje = 'Documento o contraseña incorrectos.';
+            break;
+          case 'wrong-password':
+            _errorMensaje = 'Contraseña incorrecta.';
+            break;
+          case 'too-many-requests':
+            _errorMensaje = 'Demasiados intentos. Intenta más tarde.';
+            break;
+          default:
+            _errorMensaje = 'Error al iniciar sesión. Intenta de nuevo.';
+        }
+      });
+    } finally {
+      if (mounted) setState(() => _cargando = false);
+    }
+  }
+
+  @override
+  void dispose() {
+    _documentoController.dispose();
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.grey.shade50,
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 40),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Ícono
+                Container(
+                  width: 72,
+                  height: 72,
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade600,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: const Icon(
+                    Icons.fingerprint,
+                    color: Colors.white,
+                    size: 40,
+                  ),
+                ),
+                const SizedBox(height: 24),
+
+                const Text(
+                  'Control de Acceso',
+                  style: TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: -0.5,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Ingresa con tu número de documento',
+                  style: TextStyle(fontSize: 13, color: Colors.grey.shade600),
+                ),
+                const SizedBox(height: 36),
+
+                // Campo documento
+                TextField(
+                  controller: _documentoController,
+                  keyboardType: TextInputType.number,
+                  textInputAction: TextInputAction.next,
+                  decoration: InputDecoration(
+                    labelText: 'Número de documento',
+                    prefixIcon: const Icon(Icons.badge_outlined),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    filled: true,
+                    fillColor: Colors.white,
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Campo contraseña
+                TextField(
+                  controller: _passwordController,
+                  obscureText: !_verPassword,
+                  textInputAction: TextInputAction.done,
+                  onSubmitted: (_) => _iniciarSesion(),
+                  decoration: InputDecoration(
+                    labelText: 'Contraseña',
+                    prefixIcon: const Icon(Icons.lock_outline),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    filled: true,
+                    fillColor: Colors.white,
+                    suffixIcon: IconButton(
+                      icon: Icon(
+                        _verPassword ? Icons.visibility_off : Icons.visibility,
+                      ),
+                      onPressed: () =>
+                          setState(() => _verPassword = !_verPassword),
+                    ),
+                  ),
+                ),
+
+                // Error
+                if (_errorMensaje != null) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: Colors.red.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.red.shade200),
+                    ),
+                    child: Row(
+                      children: [
+                        Icon(Icons.error_outline,
+                            color: Colors.red.shade700, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            _errorMensaje!,
+                            style: TextStyle(
+                                color: Colors.red.shade700, fontSize: 13),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+
+                const SizedBox(height: 24),
+
+                // Botón ingresar
+                SizedBox(
+                  width: double.infinity,
+                  height: 50,
+                  child: ElevatedButton(
+                    onPressed: _cargando ? null : _iniciarSesion,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue.shade600,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: _cargando
+                        ? const SizedBox(
+                            width: 22,
+                            height: 22,
+                            child: CircularProgressIndicator(
+                              color: Colors.white,
+                              strokeWidth: 2.5,
+                            ),
+                          )
+                        : const Text(
+                            'Ingresar',
+                            style: TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w600),
+                          ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
